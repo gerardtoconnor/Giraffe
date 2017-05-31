@@ -5,8 +5,11 @@ open FSharp.Core.Printf
 open System.Collections.Generic
 
 //between inclusive
-let inline between x l u =
-    (x - l) * (u - x) >= 0
+let inline intIn x l u = (x - l) * (u - x) >= 0
+
+let inline int64In x l u = (x - l) * (u - x) >= 0L
+
+let inline floatIn x l u = (x - l) * (u - x) >= 0.
 
 type RouteState(path:string) =
     member val path = path with get
@@ -19,7 +22,7 @@ let private stringParse (path:string) ipos fpos = path.Substring(ipos,fpos - ipo
 let private  charParse (path:string) ipos fpos = path.[ipos] |> box |> Some // this is not ideal method (but uncommonly used)
 
 let private boolParse (path:string) ipos fpos =
-    if between (fpos - ipos) 4 5 then 
+    if intIn (fpos - ipos) 4 5 then 
         match path.[ipos] with
         | 't' | 'T' -> true  |> box |> Some // Laxy matching, i'll complete later
         | 'f' | 'F' -> false |> box |> Some
@@ -32,7 +35,7 @@ let private intParse (path:string) ipos fpos =
     let mutable negNumber = false
     let rec go pos =
         let charDiff = int path.[pos] - int '0'
-        if between charDiff 0 9 then
+        if intIn charDiff 0 9 then
             result <- (result * 10) + charDiff
             if pos = fpos then
                 if negNumber then - result else result 
@@ -51,7 +54,7 @@ let private int64Parse (path:string) ipos fpos =
     let mutable negNumber = false
     let rec go pos =
         let charDiff = int64 path.[pos] - int64 '0'
-        if between charDiff 0L 9L then
+        if int64In charDiff 0L 9L then
             result <- (result * 10L) + charDiff
             if pos = fpos then
                 if negNumber then - result else result 
@@ -75,7 +78,7 @@ let floatParse (path:string) ipos fpos =
             if pos < fpos then go (pos + 1) else None
         else
             let charDiff = float path.[pos] - float '0'
-            if between charDiff 0. 9. then
+            if floatIn charDiff 0. 9. then
                 if decPlaces = 0 then 
                     result <- (result * 10.) + charDiff
                 else
@@ -230,37 +233,34 @@ let chooseRoute (routeState:RouteState) (fns:(Node->Node) list)  =
     // process path fn that returns httpHandler
 
 
-let processPath (path:string) (ipos:int) (inode:Node) : HttpHandler =
+let processPath (path:string) (ipos:int) (root:Node) : HttpHandler =
     fun succ fail ctx -> 
 
         let pathLen = path.Length
 
-        let findClosure (path:string) ipos (inode:Node) =
-            let pathLen = path.Length
-            let go pos node fin =
-                if pos < pathLen then
-                    match node.Edges.TryGetValue path.[pos] with
+        let findClosure ipos (inode:Node) =
+            let last = path.Length - 1
+            let rec go pos (node:Node) =
+                if pos < last then
+                    match node.TryGetValue path.[pos] with
                     | true,cnode -> 
-                        let nFin = 
-                            match fin with
-                            | Some v -> fin
-                            | None -> Some(pos)
                         match cnode.RouteFn with
-                        | EmptyMap -> go (pos + 1) node nFin
-                        | x -> nFin
-                    | false,_ -> go (pos + 1) node 
+                        | EmptyMap -> go (pos + 1) node
+                        | x -> Some (pos ,x)
+                    | false,_ -> go (pos + 1) node
                 else
                     None
-            go ipos inode None
+            go ipos inode
             
-
-        let rec go pos node =
-            match node.Search path.[pos] with
-            | Some n ->
-                match n.routeFn with
+        let rec routeFnMatch pos = 
+                function
                 | EmptyMap -> go (pos + 1) n
                 | HandlerMap fn -> fn
-                | RouteCont.MatchMap (cls,nOpt,mfn) -> 
+                | PartialMatch (fmt,cnode) ->
+                    match findClosure pos cnode with
+                    | Some (npos,fn) -> routeFnMatch 
+                    | None -> fail ctx
+                | MatchComplete (cls,mfn) -> 
                     let matchBounds =
                         match nOpt with
                         | None -> (pos + 1 , path.Length - 1)
@@ -268,8 +268,12 @@ let processPath (path:string) (ipos:int) (inode:Node) : HttpHandler =
                             match findClosure path pos snode with
                             | None -> (pos + 1 , path.Length - 1)
                             | Some fin -> (pos + 1, fin -1)
-                    
 
+        
 
-                    parser pos node
-            | None -> fail ctx
+        let rec go pos (node:Node) =
+            match node.TryGetValue path.[pos] with
+            | true, n -> 
+                routeFnMatch n.RouteFn
+            | false , _ -> fail ctx
+        go ipos root
