@@ -4,6 +4,7 @@ open Giraffe.HttpHandlers
 open FSharp.Core.Printf
 open System.Collections.Generic
 
+//between inclusive
 let inline between x l u =
     (x - l) * (u - x) >= 0
 
@@ -11,7 +12,7 @@ type RouteState(path:string) =
     member val path = path with get
     member val pos = 0 with get , set
 
-/// Range Parsers that quickly try parse over matched range (all fpos checked before running)
+/// Private Range Parsers that quickly try parse over matched range (all fpos checked before running)
 
 let private stringParse (path:string) ipos fpos = path.Substring(ipos,fpos - ipos) |> box |> Some
 
@@ -31,7 +32,7 @@ let private intParse (path:string) ipos fpos =
     let mutable negNumber = false
     let rec go pos =
         let charDiff = int path.[pos] - int '0'
-        if -1 < charDiff && charDiff < 10 then
+        if between charDiff 0 9 then
             result <- (result * 10) + charDiff
             if pos = fpos then
                 if negNumber then - result else result 
@@ -50,7 +51,7 @@ let private int64Parse (path:string) ipos fpos =
     let mutable negNumber = false
     let rec go pos =
         let charDiff = int64 path.[pos] - int64 '0'
-        if -1L < charDiff && charDiff < 10L then
+        if between charDiff 0L 9L then
             result <- (result * 10L) + charDiff
             if pos = fpos then
                 if negNumber then - result else result 
@@ -65,21 +66,22 @@ let private int64Parse (path:string) ipos fpos =
     
 let floatParse (path:string) ipos fpos =
     let mutable result = 0.
-    let mutable decPlaces = 0.
+    let mutable decPlaces = 0
     let mutable negNumber = false
-    
+    let decPower = [|1.;10.;100.;1000.;10000.;100000.;1000000.;10000000.;100000000.;100000000.|]
     let rec go pos =
         if path.[pos] = '.' then
-            decPlaces <- 1.
+            decPlaces <- 1
             if pos < fpos then go (pos + 1) else None
         else
             let charDiff = float path.[pos] - float '0'
-            if -1. < charDiff && charDiff < 10. then
-                if decPlaces = 0. then 
+            if between charDiff 0. 9. then
+                if decPlaces = 0 then 
                     result <- (result * 10.) + charDiff
                 else
-                    result <- result + ((float charDiff) / (10. * decPlaces))
-                if pos = fpos then
+                    result <- result + ( charDiff / decPower.[decPlaces])
+                    decPlaces <- decPlaces + 1
+                if pos = fpos || decPlaces > 9 then
                     if negNumber then - result else result 
                     |> box |> Some 
                 else go (pos + 1)   // continue iter
@@ -122,7 +124,8 @@ type Node(iRouteFn:RouteCont<'T>) =
             edges.Add(v,node)
             node
 
-    member val Edges = edges with get
+    member x.TryGetValue v = edges.TryGetValue v
+    //member val Edges = edges with get
 
     member x.Search v =
         match edges.TryGetValue v with
@@ -133,7 +136,7 @@ type Node(iRouteFn:RouteCont<'T>) =
         let fin = path.Length
         let rec go pos (node:Node) =
             if pos < fin then
-                match node.Edges.TryGetValue path.[pos] with
+                match node.TryGetValue path.[pos] with
                 | true,cNode->
                     match node.RouteFn with
                     | EmptyMap -> go (pos + 1) cNode
@@ -162,7 +165,9 @@ type Node(iRouteFn:RouteCont<'T>) =
 and RouteCont<'T> =
 | EmptyMap
 | HandlerMap of HttpHandler
-| MatchMap of ( (char list) * (Node option) * ('T -> HttpHandler) )
+| PartialMatch of ( char * (Node) )
+| MatchComplete of ( (char list) * ('T -> HttpHandler) )
+
 
 // test construction of Node Trie using node mapping functions
 ////////////////////////////////////////////////////
@@ -180,26 +185,37 @@ let tRoute (path:string) (fn:HttpHandler) (root:Node)=
 
 // parsing route that iterates down nodes, parses, and then continues down further notes if needed
 let tRoutef (path : StringFormat<_,'U>) (fn:'U -> HttpHandler) (root:Node)=
-    let fin = path.Value.Length - 1 
-    let rec go i (node:Node) (fMap:char list) =
-        if i = fin then
-            node.Add path.Value.[i] (MatchMap( fMap , None ))
+    let last = path.Value.Length - 1 
+    let rec go i (fmap:char list) (node:Node)  =
+        if i = last then
+            // have reached the end of the string match so add fn handler, and no continuation node
+            node.Add path.Value.[i] (MatchComplete( fmap , fn ))
         else
-            if path.Value.[i] = '%' && i + 1 < fin then
+            if path.Value.[i] = '%' && i + 1 <= last then
                 let fmtChar = path.Value.[i + 1]
-                if formatStringMap.ContainsKey fmtChar then
-                    let nMatchMap = fmtChar :: fMap
-                    let newNodeBranch = Node(EmptyMap) //doublr check logic & relation to i + 1 = 2
-                    node.RouteFn <- MatchMap( nMatchMap , Some newNodeBranch )
-                    go (i + 2) newNodeBranch nMatchMap
+                // overrided % case
+                if fmtChar = '%' then
+                    node.Add '%' EmptyMap
+                    |> go (i + 2) fmap
+                // formater with valid key
+                else if formatStringMap.ContainsKey fmtChar then
+                    let fmap' = fmtChar :: fmap 
+                    if i + 1 = last then // if at the end of the parse
+                        node.RouteFn <- MatchComplete( fmap' , fn )
+                        node
+                    else 
+                        let newNodeBranch = Node(EmptyMap)
+                        node.RouteFn <- PartialMatch( fmtChar , newNodeBranch ) // need to insert Parser on this current node before match string part
+                        go (i + 2) fmap' newNodeBranch 
+                // badly formated format string that has unknown char after %
                 else
                     failwith (sprintf "Routef parsing error, invalid format char '%c' , should be: b | c | s | i | d | f" fmtChar)
-                    let nextNode = node.Add path.Value.[i] EmptyMap
-                    go (i + 1) nextNode fMap
+                    node.Add path.Value.[i] EmptyMap
+                    |> go (i + 1) fmap
             else
-                let nextNode = node.Add path.Value.[i] EmptyMap
-                go (i + 1) nextNode fMap
-    go 0 root []
+                node.Add path.Value.[i] EmptyMap
+                |> go (i + 1) fmap
+    go 0 [] root 
 
 // choose root will apply its root node to all route mapping functions to generate Trie at compile time, function produced will take routeState (path) and execute appropriate function
 let chooseRoute (routeState:RouteState) (fns:(Node->Node) list)  =
@@ -218,7 +234,6 @@ let processPath (path:string) (ipos:int) (inode:Node) : HttpHandler =
     fun succ fail ctx -> 
 
         let pathLen = path.Length
-
 
         let findClosure (path:string) ipos (inode:Node) =
             let pathLen = path.Length
@@ -243,7 +258,7 @@ let processPath (path:string) (ipos:int) (inode:Node) : HttpHandler =
             match node.Search path.[pos] with
             | Some n ->
                 match n.routeFn with
-                | EmptyMap -> go (pos+1) n
+                | EmptyMap -> go (pos + 1) n
                 | HandlerMap fn -> fn
                 | RouteCont.MatchMap (cls,nOpt,mfn) -> 
                     let matchBounds =
