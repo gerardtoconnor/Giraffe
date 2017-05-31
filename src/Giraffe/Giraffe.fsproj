@@ -43,6 +43,7 @@
     <Compile Include="HttpContextExtensions.fs"/>
     <Compile Include="HtmlEngine.fs"/>
     <Compile Include="RazorEngine.fs"/>
+    <Compile Include="HttpRouter.fs"/>
     <Compile Include="HttpHandlers.fs"/>
     <Compile Include="Middleware.fs"/>
   </ItemGroup>
