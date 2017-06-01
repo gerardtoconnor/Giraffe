@@ -4,6 +4,8 @@ open Giraffe.HttpHandlers
 open FSharp.Core.Printf
 open System.Collections.Generic
 
+type HttpHandler = HttpHandler
+
 //between inclusive
 let inline intIn x l u = (x - l) * (u - x) >= 0
 
@@ -126,7 +128,11 @@ type Node(iRouteFn:RouteCont<'T>) =
             let node = Node(routeFn)
             edges.Add(v,node)
             node
-
+    
+    member x.EdgeCount 
+        with get () = edges.Count
+    
+    member x.GetEdgeKeys = edges.Keys
     member x.TryGetValue v = edges.TryGetValue v
     //member val Edges = edges with get
 
@@ -148,28 +154,12 @@ type Node(iRouteFn:RouteCont<'T>) =
             else None
         go ipos x
 
-        /// Multiple Edge designs possible, for now use simple dictionary over sorted array w/ binary search
-
-        // let rec go l r = 
-        //     if l > r then 
-        //         None 
-        //     else
-        //         let m = (l + r) / 2
-        //         if edges.[m].Char = v then edges.[m].Node |> Some
-        //         else if edges.[m].Char < v then go (m + 1) r
-        //         else if edges.[m].Char > v then go l (m - 1)
-        //         else None
-    
-        // match edges.Count with 
-        // | 0 -> None
-        // | 1 -> if edges.[0].Char = v then edges.[0].Node |> Some else None 
-        // | n -> go 0 (n - 1) 
-
 and RouteCont<'T> =
 | EmptyMap
 | HandlerMap of HttpHandler
-| PartialMatch of ( char * (Node) )
-| MatchComplete of ( (char list) * ('T -> HttpHandler) )
+| ApplyMatch of ( char * (Node) )
+| MatchComplete of ( (int) * ('T -> HttpHandler) ) // (lastParser, No# Parsers, Cont) 
+| ApplyMatchAndComplete of ( char * (int) * ('T -> HttpHandler) ) // (lastParser, No# Parsers, Cont) 
 
 
 // test construction of Node Trie using node mapping functions
@@ -187,38 +177,38 @@ let tRoute (path:string) (fn:HttpHandler) (root:Node)=
     go 0 root
 
 // parsing route that iterates down nodes, parses, and then continues down further notes if needed
-let tRoutef (path : StringFormat<_,'U>) (fn:'U -> HttpHandler) (root:Node)=
-    let last = path.Value.Length - 1 
-    let rec go i (fmap:char list) (node:Node)  =
+let tRoutef (path : StringFormat<_,'T>) (fn:'T -> HttpHandler) (root:Node)=
+    let last = path.Value.Length - 1
+    let rec go i (pcount) (node:Node)  =
         if i = last then
             // have reached the end of the string match so add fn handler, and no continuation node
-            node.Add path.Value.[i] (MatchComplete( fmap , fn ))
+            node.Add path.Value.[i] (MatchComplete( pcount , fn ))
         else
             if path.Value.[i] = '%' && i + 1 <= last then
                 let fmtChar = path.Value.[i + 1]
                 // overrided % case
                 if fmtChar = '%' then
                     node.Add '%' EmptyMap
-                    |> go (i + 2) fmap
+                    |> go (i + 2) pcount
                 // formater with valid key
                 else if formatStringMap.ContainsKey fmtChar then
-                    let fmap' = fmtChar :: fmap 
+
                     if i + 1 = last then // if at the end of the parse
-                        node.RouteFn <- MatchComplete( fmap' , fn )
+                        node.RouteFn <- ApplyMatchAndComplete( fmtChar , pcount + 1 , fn )
                         node
                     else 
                         let newNodeBranch = Node(EmptyMap)
-                        node.RouteFn <- PartialMatch( fmtChar , newNodeBranch ) // need to insert Parser on this current node before match string part
-                        go (i + 2) fmap' newNodeBranch 
+                        node.RouteFn <- ApplyMatch( fmtChar , newNodeBranch ) // need to insert Parser on this current node before match string part
+                        go (i + 2) (pcount + 1) newNodeBranch 
                 // badly formated format string that has unknown char after %
                 else
-                    failwith (sprintf "Routef parsing error, invalid format char '%c' , should be: b | c | s | i | d | f" fmtChar)
+                    failwith (sprintf "Routef parsing error, invalid format char identifier '%c' , should be: b | c | s | i | d | f" fmtChar)
                     node.Add path.Value.[i] EmptyMap
-                    |> go (i + 1) fmap
+                    |> go (i + 1) pcount
             else
                 node.Add path.Value.[i] EmptyMap
-                |> go (i + 1) fmap
-    go 0 [] root 
+                |> go (i + 1) pcount
+    go 0 0 root 
 
 // choose root will apply its root node to all route mapping functions to generate Trie at compile time, function produced will take routeState (path) and execute appropriate function
 let chooseRoute (routeState:RouteState) (fns:(Node->Node) list)  =
@@ -230,50 +220,84 @@ let chooseRoute (routeState:RouteState) (fns:(Node->Node) list)  =
             h root |> ignore
             go t
     go fns
-    // process path fn that returns httpHandler
 
-
+// process path fn that returns httpHandler
 let processPath (path:string) (ipos:int) (root:Node) : HttpHandler =
     fun succ fail ctx -> 
 
-        let pathLen = path.Length
+        let last = path.Length - 1
 
-        let findClosure ipos (inode:Node) =
-            let last = path.Length - 1
+        //gets pathposition and next function to apply
+        let getNextCont ipos (inode:Node) = 
             let rec go pos (node:Node) =
-                if pos < last then
+                if pos <= last then
                     match node.TryGetValue path.[pos] with
                     | true,cnode -> 
                         match cnode.RouteFn with
-                        | EmptyMap -> go (pos + 1) node
+                        | EmptyMap -> go (pos + 1) cnode
                         | x -> Some (pos ,x)
-                    | false,_ -> go (pos + 1) node
+                    | false,_ -> None //go (pos + 1) node // if node does not match this pos, keep trying down path for match
                 else
                     None
             go ipos inode
+
+        //in case of patern match, where suffix text(s) have to match, keep trying down path till matches, returning end position to parse
+        //this needs to be optimised 
+        let findClosue ipos (inode:Node) =
+            let rec find pos (node:Node) =
+                match getNextCont pos node with
+                | Some r -> Some r
+                | None ->
+                    if ipos <= last then
+                        find (pos + 1) node
+                    else
+                        None
+            find ipos inode
+
+        let revLay pcount ls =
+            let results = Array.zeroCreate<obj>(pcount)
+            let rec go ls i =
+                if i < 0 then None
+                else match ls with
+                        | [] -> Some results
+                        | h :: t -> 
+                            results.[i] <- h
+                            go t (i - 1)
+            go ls (pcount - 1)
+        
+        let rec go pos (node:Node) pobjs =
             
-        let rec routeFnMatch pos = 
+            let rec routeFnMatch pos pobjs = 
                 function
                 | EmptyMap -> go (pos + 1) n
                 | HandlerMap fn -> fn
-                | PartialMatch (fmt,cnode) ->
+                | ApplyMatch (fmt,cnode) ->
                     match findClosure pos cnode with
-                    | Some (npos,fn) -> routeFnMatch 
-                    | None -> fail ctx
-                | MatchComplete (cls,mfn) -> 
-                    let matchBounds =
-                        match nOpt with
-                        | None -> (pos + 1 , path.Length - 1)
-                        | Some snode -> 
-                            match findClosure path pos snode with
-                            | None -> (pos + 1 , path.Length - 1)
-                            | Some fin -> (pos + 1, fin -1)
+                    | Some (npos,fn) -> 
+                        match formatStringMap fmt pos npos with
+                        | Some o -> routeFnMatch npos (o :: pobjs) fn
+                        | None -> fail ctx //<< failed to parse, failed to match
+                    | None -> fail ctx //<< no ending seq match, failed to match
+                | MatchComplete (pcount,mfn) -> 
+                    match argsOpt with
+                    | Some args ->
+                        let result =
+                            match values.Length with
+                            | 1 -> values.[0]
+                            | _ ->
+                                let types =
+                                    values
+                                    |> Array.map (fun v -> v.GetType())
+                                let tupleType = FSharpType.MakeTupleType types
+                                FSharpValue.MakeTuple(values, tupleType)
+                        result :?> 'T |> Some 
+                    | None -> 
+                | ApplyMatchAndComplete of ( char * (int) * ('T -> HttpHandler) ) // (lastParser, No# Parsers, Cont) 
 
-        
-
-        let rec go pos (node:Node) =
+            
             match node.TryGetValue path.[pos] with
             | true, n -> 
-                routeFnMatch n.RouteFn
+                routeFnMatch pos pobjs n.RouteFn 
             | false , _ -> fail ctx
-        go ipos root
+
+        go ipos root []
