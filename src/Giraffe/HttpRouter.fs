@@ -26,7 +26,7 @@ let private  charParse (path:string) ipos fpos = path.[ipos] |> box |> Some // t
 let private boolParse (path:string) ipos fpos =
     if intIn (fpos - ipos) 4 5 then 
         match path.[ipos] with
-        | 't' | 'T' -> true  |> box |> Some // Laxy matching, i'll complete later
+        | 't' | 'T' -> true  |> box |> Some // todo: Laxy matching, i'll complete later
         | 'f' | 'F' -> false |> box |> Some
         | _ -> None
     else None
@@ -114,6 +114,7 @@ let formatStringMap =
 // assumptions: memory and compile time not relevant, all about execution speed, initially testing with Dictionary edges
 
 type Node(iRouteFn:RouteCont<'T>) = 
+    let mutable hasEdges = false //quick field to check if node has edges
     let edges = Dictionary<char,Node>()
     member val RouteFn = iRouteFn with get,set 
     member x.Add v routeFn =
@@ -127,6 +128,7 @@ type Node(iRouteFn:RouteCont<'T>) =
         | false, _ -> 
             let node = Node(routeFn)
             edges.Add(v,node)
+            if not hasEdges then hasEdges <- true //quick field to check if node has edges
             node
     
     member x.EdgeCount 
@@ -160,6 +162,8 @@ and RouteCont<'T> =
 | ApplyMatch of ( char * (Node) )
 | MatchComplete of ( (int) * ('T -> HttpHandler) ) // (lastParser, No# Parsers, Cont) 
 | ApplyMatchAndComplete of ( char * (int) * ('T -> HttpHandler) ) // (lastParser, No# Parsers, Cont) 
+| PartialMatch of ( char *  * (Node) )
+| MatchComplete of ( (char list) * ('T -> HttpHandler) )
 
 
 // test construction of Node Trie using node mapping functions
