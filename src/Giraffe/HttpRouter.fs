@@ -1,5 +1,6 @@
 module Giraffe.HttpRouter
 
+open System.Threading.Tasks
 open Microsoft.AspNetCore.Http
 open Microsoft.AspNetCore.Hosting
 open Microsoft.Extensions.Primitives
@@ -230,7 +231,7 @@ let routeTree (routeState:RouteState) (fns:(Node->Node) list)  =
 
 // process path fn that returns httpHandler
 let processPath (path:string) (ipos:int) (root:Node) : HttpHandler =
-    fun succ fail ctx -> 
+    fun (succ:Continuation) (fail:Continuation) (ctx:HttpContext) -> 
     
     let last = path.Length
     
@@ -261,29 +262,31 @@ let processPath (path:string) (ipos:int) (root:Node) : HttpHandler =
             | x2,Some cn -> Some(x1 - 1,x2,cn)                 // from where char found to end of node chain complete
             | x2,None   ->  getNodeCompletion c x2 node // char foundpart of match, not completion string
 
-    let inline createResult (args:obj list) (argCount:int) (fn:'T -> HttpHandler) =
-        match argCount with
-        | 1 -> args.Head // HACK: look into performant way to safely extract
-        | _ ->
-            let values = Array.zeroCreate<obj>(argCount)
-            let valuesTypes = Array.zeroCreate<System.Type>(argCount)
-            let rec revmap ls i = // List.rev |> List.toArray not used to minimise list traversal
-                if i < 0 then ()
-                else
-                    match ls with
-                    | [] -> ()
-                    | h :: t -> 
-                        values.[i] <- h
-                        valuesTypes.[i] <- h.GetType()
-                        revmap t (i-1)
-            revmap args argCount
-            
-            let tupleType = FSharpType.MakeTupleType valuesTypes
-            FSharpValue.MakeTuple(values, tupleType)
-        :?> 'T
-        |> fn
+    let createResult (args:obj list) (argCount:int) (fn:'T -> HttpHandler) : Task<HttpContext> =
+        let input =  
+            match argCount with
+            | 1 -> args.Head // HACK: look into performant way to safely extract
+            | _ ->
+                let values = Array.zeroCreate<obj>(argCount)
+                let valuesTypes = Array.zeroCreate<System.Type>(argCount)
+                let rec revmap ls i = // List.rev |> List.toArray not used to minimise list traversal
+                    if i < 0 then ()
+                    else
+                        match ls with
+                        | [] -> ()
+                        | h :: t -> 
+                            values.[i] <- h
+                            valuesTypes.[i] <- h.GetType()
+                            revmap t (i-1)
+                revmap args argCount
+                
+                let tupleType = FSharpType.MakeTupleType valuesTypes
+                FSharpValue.MakeTuple(values, tupleType)
+            :?> 'T
+        fn input succ fail ctx
 
-    let matchFinalNodeFn (fn:RouteCont<'T>) pos acc =
+
+    let matchFinalNodeFn (fn:RouteCont<'T>) pos acc : Task<HttpContext> =
         match fn with
         | EmptyMap -> fail ctx // the chain didnt end with a handler (in error) so fail
         | HandlerMap fn -> fn succ fail ctx // run function with all parameters
@@ -294,7 +297,7 @@ let processPath (path:string) (ipos:int) (root:Node) : HttpHandler =
             | Some o -> createResult (o :: acc) i fn
             | None -> fail ctx
 
-    let rec applyMatch (f:char,c:char,n) pos node acc =
+    let rec applyMatch (f:char,c:char,n) pos node acc : Task<HttpContext> =
         match getNodeCompletion c pos node with
         | Some (fpos,npos,cnode) ->
             match formatStringMap.[f] path pos fpos with

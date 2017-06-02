@@ -307,11 +307,12 @@ let dotLiquid (contentType : string) (template : string) (model : obj)  : HttpHa
 /// Reads a dotLiquid template file from disk and compiles it with the given model and sets
 /// the compiled output as well as the given contentType as the HTTP reponse.
 let dotLiquidTemplate (contentType : string) (templatePath : string) (model : obj) : HttpHandler = 
+    fun succ fail ctx ->
         task {
             let env = ctx.GetService<IHostingEnvironment>()
             let templatePath = env.ContentRootPath + templatePath
             let! template = readFileAsString templatePath
-            return! dotLiquid contentType template model
+            return! dotLiquid contentType template model succ fail ctx
         }
 
 /// Reads a dotLiquid template file from disk and compiles it with the given model and sets
@@ -322,6 +323,7 @@ let dotLiquidHtmlView (templatePath : string) (model : obj)  : HttpHandler =
 /// Reads a razor view from disk and compiles it with the given model and sets
 /// the compiled output as the HTTP reponse with the given contentType.
 let razorView (contentType : string) (viewName : string) (model : 'T)  : HttpHandler =
+    fun succ fail ctx ->
         task {
             let engine = ctx.GetService<IRazorViewEngine>()
             let tempDataProvider = ctx.GetService<ITempDataProvider>()
@@ -330,7 +332,7 @@ let razorView (contentType : string) (viewName : string) (model : 'T)  : HttpHan
             | Error msg -> 
                 return! (failwith msg)
             | Ok output ->
-                return! (setHttpHeader "Content-Type" contentType >=> setBodyAsString output) 
+                return! (setHttpHeader "Content-Type" contentType >=> setBodyAsString output) succ fail ctx
         }
 
 /// Reads a razor view from disk and compiles it with the given model and sets
@@ -357,26 +359,29 @@ let renderHtml (document: HtmlNode) : HttpHandler =
 let negotiateWith (negotiationRules    : IDictionary<string, obj -> HttpHandler>)
                   (unacceptableHandler : HttpHandler)
                   (responseObj         : obj) : HttpHandler =
-        (ctx.Request.GetTypedHeaders()).Accept
-        |> fun acceptedMimeTypes ->
-            match isNull acceptedMimeTypes || acceptedMimeTypes.Count = 0 with
-            | true  ->
-                negotiationRules.Keys
-                |> Seq.head
-                |> fun mediaType -> negotiationRules.[mediaType]
-                |> fun handler   -> handler responseObj 
-            | false ->
-                List.ofSeq acceptedMimeTypes
-                |> List.filter (fun x -> negotiationRules.ContainsKey x.MediaType)
-                |> fun mimeTypes ->
-                    match mimeTypes.Length with
-                    | 0 -> unacceptableHandler 
-                    | _ ->
-                        mimeTypes
-                        |> List.sortByDescending (fun x -> if x.Quality.HasValue then x.Quality.Value else 1.0)
-                        |> List.head
-                        |> fun mimeType -> negotiationRules.[mimeType.MediaType]
-                        |> fun handler  -> handler responseObj 
+    fun succ fail ctx ->              
+        let nextFn = 
+            (ctx.Request.GetTypedHeaders()).Accept
+            |> fun acceptedMimeTypes ->
+                match isNull acceptedMimeTypes || acceptedMimeTypes.Count = 0 with
+                | true  ->
+                    negotiationRules.Keys
+                    |> Seq.head
+                    |> fun mediaType -> negotiationRules.[mediaType]
+                    |> fun handler   -> handler responseObj 
+                | false ->
+                    List.ofSeq acceptedMimeTypes
+                    |> List.filter (fun x -> negotiationRules.ContainsKey x.MediaType)
+                    |> fun mimeTypes ->
+                        match mimeTypes.Length with
+                        | 0 -> unacceptableHandler 
+                        | _ ->
+                            mimeTypes
+                            |> List.sortByDescending (fun x -> if x.Quality.HasValue then x.Quality.Value else 1.0)
+                            |> List.head
+                            |> fun mimeType -> negotiationRules.[mimeType.MediaType]
+                            |> fun handler  -> handler responseObj
+        nextFn succ fail ctx                
 
 /// Same as negotiateWith except that it specifies a default set of negotiation rules
 /// and a default unacceptableHandler.
@@ -391,7 +396,7 @@ let negotiate (responseObj : obj) =
     let defaultHandler : HttpHandler = 
         fun succ fail ctx ->
             let msg = (ctx.Request.Headers.["Accept"]).ToString() |> sprintf "%s is unacceptable by the server."
-            text msg
+            text msg succ fail ctx
 
     negotiateWith
         // Default negotiation rules
