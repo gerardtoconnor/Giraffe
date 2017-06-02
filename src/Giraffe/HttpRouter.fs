@@ -18,6 +18,8 @@ let inline int64In x l u = (x - l) * (u - x) >= 0L
 
 let inline floatIn x l u = (x - l) * (u - x) >= 0.
 
+let routerKey = "router_pos"
+
 type RouteState(path:string) =
     member val path = path with get
     member val pos = 0 with get , set
@@ -117,7 +119,7 @@ let formatStringMap =
         'f', (floatParse )  // float
     ]
 
-// implimenation of Trie Node
+// implimenation of (router) Trie Node
 // assumptions: memory and compile time not relevant, all about execution speed, initially testing with Dictionary edges
 
 type Node(iRouteFn:RouteCont<'T>) = 
@@ -219,20 +221,13 @@ let tRoutef (path : StringFormat<_,'T>) (fn:'T -> HttpHandler) (root:Node)=
     go 0 0 root 
 
 // choose root will apply its root node to all route mapping functions to generate Trie at compile time, function produced will take routeState (path) and execute appropriate function
-let routeTree (routeState:RouteState) (fns:(Node->Node) list)  =
-    let root = Node(EmptyMap)
-    let rec go ls =
-        match ls with
-        | [] -> ()
-        | h :: t ->
-            h root |> ignore
-            go t
-    go fns
 
 // process path fn that returns httpHandler
-let processPath (path:string) (ipos:int) (root:Node) : HttpHandler =
+let private processPath (rs:RouteState) (root:Node) : HttpHandler =
     fun (succ:Continuation) (fail:Continuation) (ctx:HttpContext) -> 
     
+    let path = rs.path
+    let ipos = rs.pos
     let last = path.Length
     
     let rec checkMatchSubPath pos (node:Node) = // this funciton is only used by parser paths
@@ -285,16 +280,25 @@ let processPath (path:string) (ipos:int) (root:Node) : HttpHandler =
             :?> 'T
         fn input succ fail ctx
 
+    let saveRouteState pos = 
+        rs.pos <- pos
+        ctx.Items.[routerKey] <- rs 
 
     let matchFinalNodeFn (fn:RouteCont<'T>) pos acc : Task<HttpContext> =
         match fn with
         | EmptyMap -> fail ctx // the chain didnt end with a handler (in error) so fail
-        | HandlerMap fn -> fn succ fail ctx // run function with all parameters
+        | HandlerMap fn ->
+            saveRouteState pos
+            fn succ fail ctx // run function with all parameters
         | ApplyMatch _ -> fail ctx // the chain didnt end with a handler (in error) so fail
-        | MatchComplete (i,fn) ->  createResult [] i fn // a chain with parses, ending in string has ended and can now be applied 
+        | MatchComplete (i,fn) ->  
+            saveRouteState pos
+            createResult [] i fn // a chain with parses, ending in string has ended and can now be applied 
         | ApplyMatchAndComplete ( f,i,fn ) -> // a chain with parsers (optional) ends with pattern match also
             match formatStringMap.[f] path pos last with
-            | Some o -> createResult (o :: acc) i fn
+            | Some o -> 
+                saveRouteState pos
+                createResult (o :: acc) i fn
             | None -> fail ctx
 
     let rec applyMatch (f:char,c:char,n) pos node acc : Task<HttpContext> =
@@ -323,3 +327,21 @@ let processPath (path:string) (ipos:int) (root:Node) : HttpHandler =
             | _ -> fail ctx // only a partial match would cause no next node so anything else is err
     crawl ipos root        
 
+let routeTrie (fns:(Node->Node) list) : HttpHandler =
+    let root = Node(EmptyMap)
+    // precompile the route functions into node trie
+    let rec go ls =
+        match ls with
+        | [] -> ()
+        | h :: t ->
+            h root |> ignore
+            go t
+    go fns
+
+    fun succ fail ctx ->
+        //get path progress (if any so far)
+        let routeState =
+            match ctx.Items.TryGetValue routerKey with
+            | true, (v:obj) -> v :?> RouteState  
+            | false,_-> RouteState(ctx.Request.Path.ToString())
+        processPath routeState root succ fail ctx
