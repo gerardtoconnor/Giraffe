@@ -1,9 +1,14 @@
 module Giraffe.HttpRouter
 
-open Giraffe.HttpHandlers
+open Microsoft.AspNetCore.Http
+open Microsoft.AspNetCore.Hosting
+open Microsoft.Extensions.Primitives
 open FSharp.Core.Printf
 open System.Collections.Generic
 open Microsoft.FSharp.Reflection
+open Giraffe.AsyncTask
+open Giraffe.HttpHandlers
+
 
 //between inclusive
 let inline intIn x l u = (x - l) * (u - x) >= 0
@@ -16,7 +21,7 @@ type RouteState(path:string) =
     member val path = path with get
     member val pos = 0 with get , set
 
-/// Private Range Parsers that quickly try parse over matched range (all fpos checked before running)
+/// Private Range Parsers that quickly try parse over matched range (all fpos checked before running in preceeding functions)
 
 let private stringParse (path:string) ipos fpos = path.Substring(ipos,fpos - ipos) |> box |> Some
 
@@ -67,12 +72,14 @@ let private int64Parse (path:string) ipos fpos =
     | '-' -> negNumber <- true ; go (ipos + 1)
     | '+' -> go (ipos + 1)
     | _ -> go (ipos)
+
+let decPower = [|1.;10.;100.;1000.;10000.;100000.;1000000.;10000000.;100000000.;100000000.|] |> Array.map (fun d -> 1. / d) // precompute inverse once at compile time
     
 let floatParse (path:string) ipos fpos =
     let mutable result = 0.
     let mutable decPlaces = 0
     let mutable negNumber = false
-    let decPower = [|1.;10.;100.;1000.;10000.;100000.;1000000.;10000000.;100000000.;100000000.|]
+    
     let rec go pos =
         if path.[pos] = '.' then
             decPlaces <- 1
@@ -83,7 +90,7 @@ let floatParse (path:string) ipos fpos =
                 if decPlaces = 0 then 
                     result <- (result * 10.) + charDiff
                 else
-                    result <- result + ( charDiff / decPower.[decPlaces])
+                    result <- result + ( charDiff * decPower.[decPlaces]) // char is divided using multiplication of pre-computed divisors
                     decPlaces <- decPlaces + 1
                 if pos = fpos || decPlaces > 9 then
                     if negNumber then - result else result 
@@ -254,7 +261,7 @@ let processPath (path:string) (ipos:int) (root:Node) : HttpHandler =
             | x2,Some cn -> Some(x1 - 1,x2,cn)                 // from where char found to end of node chain complete
             | x2,None   ->  getNodeCompletion c x2 node // char foundpart of match, not completion string
 
-    let inline createResult (args:obj list) (argCount:int) (fn:'T -> Httphandler) =
+    let inline createResult (args:obj list) (argCount:int) (fn:'T -> HttpHandler) =
         match argCount with
         | 1 -> args.Head // HACK: look into performant way to safely extract
         | _ ->
@@ -279,7 +286,7 @@ let processPath (path:string) (ipos:int) (root:Node) : HttpHandler =
     let matchFinalNodeFn (fn:RouteCont<'T>) pos acc =
         match fn with
         | EmptyMap -> fail ctx // the chain didnt end with a handler (in error) so fail
-        | HandlerMap fn -> fn // run function with all parameters
+        | HandlerMap fn -> fn succ fail ctx // run function with all parameters
         | ApplyMatch _ -> fail ctx // the chain didnt end with a handler (in error) so fail
         | MatchComplete (i,fn) ->  createResult [] i fn // a chain with parses, ending in string has ended and can now be applied 
         | ApplyMatchAndComplete ( f,i,fn ) -> // a chain with parsers (optional) ends with pattern match also

@@ -1,8 +1,8 @@
-module Giraffe.HttpRouter
+// module Giraffe.HttpRouter
 
-open Giraffe.HttpHandlers
-open FSharp.Core.Printf
-open System.Collections.Generic
+// open Giraffe.HttpHandlers
+// open FSharp.Core.Printf
+// open System.Collections.Generic
 
 // this is a model for further performant router that uses struct nodes
 

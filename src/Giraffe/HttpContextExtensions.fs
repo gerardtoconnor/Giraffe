@@ -64,16 +64,16 @@ type HttpContext with
 
     member this.BindForm<'T>() =
         task {
-            let! form = this.Request.ReadFormAsync()
+            let! (form:IFormCollection) = this.Request.ReadFormAsync()
             let obj   = Activator.CreateInstance<'T>()
             let props = obj.GetType().GetProperties(BindingFlags.Instance ||| BindingFlags.Public)
             props
             |> Seq.iter (fun p ->
                 //let strValue = ref (StringValues())
-                match form.TryGetValue(p.Name, strValue) with
+                match form.TryGetValue(p.Name) with
                 | true , strValue ->  
                     let converter = TypeDescriptor.GetConverter p.PropertyType
-                    let value = converter.ConvertFromInvariantString(strValue.Value.ToString())
+                    let value = converter.ConvertFromInvariantString(strValue.ToString())
                     p.SetValue(obj, value, null)
                 | false , _ -> ()
             )

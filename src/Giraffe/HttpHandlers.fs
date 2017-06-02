@@ -22,7 +22,6 @@ open Giraffe.AsyncTask
 
 //type HttpContext = HttpContext 
 //Async Handlers
-//type HttpHandlerResultAsync = Task<HttpContext>
 
 type Continuation = HttpContext -> Task<HttpContext>
 
@@ -30,8 +29,8 @@ type Continuation = HttpContext -> Task<HttpContext>
 type HttpHandler = Continuation -> Continuation -> HttpContext -> Task<HttpContext>
 
 /// Combines two HttpHandler functions into one.
-let compose (a : HttpHandler) (b : HttpHandler) : HttpContext =
-    fun (succ) (fail) (ctx) ->
+let compose (a : HttpHandler) (b : HttpHandler) =
+    fun (succ : Continuation) (fail : Continuation) (ctx:HttpContext) ->
         let childCont = b succ fail
         let parentCont = a childCont fail
         parentCont ctx
@@ -55,7 +54,7 @@ let private RouteKey = "giraffe_route"
 
 let private getSavedSubPath (ctx : HttpContext) =
     if ctx.Items.ContainsKey RouteKey
-    then ctx.Items.Item RouteKey |> string |> strOption
+    then ctx.Items.Item RouteKey |> string |> strOption 
     else None
 
 let private getPath (ctx : HttpContext) =
@@ -278,7 +277,7 @@ let json (dataObj : obj) : HttpHandler =
 
 /// Serializes an object to XML and writes it to the body of the HTTP response.
 /// It also sets the HTTP header Content-Type: application/xml and sets the Content-Length header accordingly.
-let xml (dataObj : obj) : HttpHandler=
+let xml (dataObj : obj) : HttpHandler =
     setHttpHeader "Content-Type" "application/xml"
     >=> setBody (serializeXml dataObj)
 
@@ -308,7 +307,6 @@ let dotLiquid (contentType : string) (template : string) (model : obj)  : HttpHa
 /// Reads a dotLiquid template file from disk and compiles it with the given model and sets
 /// the compiled output as well as the given contentType as the HTTP reponse.
 let dotLiquidTemplate (contentType : string) (templatePath : string) (model : obj) : HttpHandler = 
-    fun succ fail ctx ->
         task {
             let env = ctx.GetService<IHostingEnvironment>()
             let templatePath = env.ContentRootPath + templatePath
@@ -324,13 +322,13 @@ let dotLiquidHtmlView (templatePath : string) (model : obj)  : HttpHandler =
 /// Reads a razor view from disk and compiles it with the given model and sets
 /// the compiled output as the HTTP reponse with the given contentType.
 let razorView (contentType : string) (viewName : string) (model : 'T)  : HttpHandler =
-    fun succ fail ctx ->
         task {
             let engine = ctx.GetService<IRazorViewEngine>()
             let tempDataProvider = ctx.GetService<ITempDataProvider>()
             let! result = renderRazorView engine tempDataProvider ctx viewName model
             match result with
-            | Error msg -> return (failwith msg)
+            | Error msg -> 
+                return! (failwith msg)
             | Ok output ->
                 return! (setHttpHeader "Content-Type" contentType >=> setBodyAsString output) 
         }
@@ -359,7 +357,6 @@ let renderHtml (document: HtmlNode) : HttpHandler =
 let negotiateWith (negotiationRules    : IDictionary<string, obj -> HttpHandler>)
                   (unacceptableHandler : HttpHandler)
                   (responseObj         : obj) : HttpHandler =
-    fun succ fail ctx ->
         (ctx.Request.GetTypedHeaders()).Accept
         |> fun acceptedMimeTypes ->
             match isNull acceptedMimeTypes || acceptedMimeTypes.Count = 0 with
