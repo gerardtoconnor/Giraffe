@@ -3,8 +3,7 @@ module Giraffe.HttpRouter
 open Giraffe.HttpHandlers
 open FSharp.Core.Printf
 open System.Collections.Generic
-
-type HttpHandler = HttpHandler
+open Microsoft.FSharp.Reflection
 
 //between inclusive
 let inline intIn x l u = (x - l) * (u - x) >= 0
@@ -159,12 +158,9 @@ type Node(iRouteFn:RouteCont<'T>) =
 and RouteCont<'T> =
 | EmptyMap
 | HandlerMap of HttpHandler
-| ApplyMatch of ( char * (Node) )
-| MatchComplete of ( (int) * ('T -> HttpHandler) ) // (lastParser, No# Parsers, Cont) 
-| ApplyMatchAndComplete of ( char * (int) * ('T -> HttpHandler) ) // (lastParser, No# Parsers, Cont) 
-| PartialMatch of ( char *  * (Node) )
-| MatchComplete of ( (char list) * ('T -> HttpHandler) )
-
+| ApplyMatch of ( char * char * (Node) ) // (parser , nextChar , contNode) 
+| MatchComplete of ( (int) * ('T -> HttpHandler) ) // ( No# Parsers, Cont) 
+| ApplyMatchAndComplete of ( char * int * ('T -> HttpHandler) ) // (lastParser, No# Parsers, Cont) 
 
 // test construction of Node Trie using node mapping functions
 ////////////////////////////////////////////////////
@@ -202,7 +198,7 @@ let tRoutef (path : StringFormat<_,'T>) (fn:'T -> HttpHandler) (root:Node)=
                         node
                     else 
                         let newNodeBranch = Node(EmptyMap)
-                        node.RouteFn <- ApplyMatch( fmtChar , newNodeBranch ) // need to insert Parser on this current node before match string part
+                        node.RouteFn <- ApplyMatch( fmtChar ,path.Value.[i+2], newNodeBranch ) // need to insert Parser on this current node before match string part
                         go (i + 2) (pcount + 1) newNodeBranch 
                 // badly formated format string that has unknown char after %
                 else
@@ -215,7 +211,7 @@ let tRoutef (path : StringFormat<_,'T>) (fn:'T -> HttpHandler) (root:Node)=
     go 0 0 root 
 
 // choose root will apply its root node to all route mapping functions to generate Trie at compile time, function produced will take routeState (path) and execute appropriate function
-let chooseRoute (routeState:RouteState) (fns:(Node->Node) list)  =
+let routeTree (routeState:RouteState) (fns:(Node->Node) list)  =
     let root = Node(EmptyMap)
     let rec go ls =
         match ls with
@@ -228,80 +224,92 @@ let chooseRoute (routeState:RouteState) (fns:(Node->Node) list)  =
 // process path fn that returns httpHandler
 let processPath (path:string) (ipos:int) (root:Node) : HttpHandler =
     fun succ fail ctx -> 
+    
+    let last = path.Length
+    
+    let rec checkMatchSubPath pos (node:Node) = // this funciton is only used by parser paths
+        match node.TryGetValue path.[pos] with
+        | true, n -> 
+            if pos = last then //if this pattern match shares node chain as substring of another
+                match n.RouteFn with
+                | MatchComplete _ -> pos, Some n
+                | _ -> pos, None
+            else checkMatchSubPath (pos + 1) n
+        | false,_ ->
+            if pos = last then
+                match node.RouteFn with
+                | MatchComplete _ -> pos, Some node
+                | _ -> pos, None
+            else
+                match node.RouteFn with
+                | ApplyMatch _ 
+                | ApplyMatchAndComplete _ -> pos, Some node
+                | _ -> pos, None
 
-        let last = path.Length - 1
+    let rec getNodeCompletion (c:char) pos (node:Node) =
+        match path.IndexOf(c,pos) with
+        | -1 -> None
+        | x1 -> 
+            match checkMatchSubPath x1 node with
+            | x2,Some cn -> Some(x1 - 1,x2,cn)                 // from where char found to end of node chain complete
+            | x2,None   ->  getNodeCompletion c x2 node // char foundpart of match, not completion string
 
-        //gets pathposition and next function to apply
-        let getNextCont ipos (inode:Node) = 
-            let rec go pos (node:Node) =
-                if pos <= last then
-                    match node.TryGetValue path.[pos] with
-                    | true,cnode -> 
-                        match cnode.RouteFn with
-                        | EmptyMap -> go (pos + 1) cnode
-                        | x -> Some (pos ,x)
-                    | false,_ -> None //go (pos + 1) node // if node does not match this pos, keep trying down path for match
+    let inline createResult (args:obj list) (argCount:int) (fn:'T -> Httphandler) =
+        match argCount with
+        | 1 -> args.Head // HACK: look into performant way to safely extract
+        | _ ->
+            let values = Array.zeroCreate<obj>(argCount)
+            let valuesTypes = Array.zeroCreate<System.Type>(argCount)
+            let rec revmap ls i = // List.rev |> List.toArray not used to minimise list traversal
+                if i < 0 then ()
                 else
-                    None
-            go ipos inode
-
-        //in case of patern match, where suffix text(s) have to match, keep trying down path till matches, returning end position to parse
-        //this needs to be optimised 
-        let findClosue ipos (inode:Node) =
-            let rec find pos (node:Node) =
-                match getNextCont pos node with
-                | Some r -> Some r
-                | None ->
-                    if ipos <= last then
-                        find (pos + 1) node
-                    else
-                        None
-            find ipos inode
-
-        let revLay pcount ls =
-            let results = Array.zeroCreate<obj>(pcount)
-            let rec go ls i =
-                if i < 0 then None
-                else match ls with
-                        | [] -> Some results
-                        | h :: t -> 
-                            results.[i] <- h
-                            go t (i - 1)
-            go ls (pcount - 1)
-        
-        let rec go pos (node:Node) pobjs =
+                    match ls with
+                    | [] -> ()
+                    | h :: t -> 
+                        values.[i] <- h
+                        valuesTypes.[i] <- h.GetType()
+                        revmap t (i-1)
+            revmap args argCount
             
-            let rec routeFnMatch pos pobjs = 
-                function
-                | EmptyMap -> go (pos + 1) n
-                | HandlerMap fn -> fn
-                | ApplyMatch (fmt,cnode) ->
-                    match findClosure pos cnode with
-                    | Some (npos,fn) -> 
-                        match formatStringMap fmt pos npos with
-                        | Some o -> routeFnMatch npos (o :: pobjs) fn
-                        | None -> fail ctx //<< failed to parse, failed to match
-                    | None -> fail ctx //<< no ending seq match, failed to match
-                | MatchComplete (pcount,mfn) -> 
-                    match argsOpt with
-                    | Some args ->
-                        let result =
-                            match values.Length with
-                            | 1 -> values.[0]
-                            | _ ->
-                                let types =
-                                    values
-                                    |> Array.map (fun v -> v.GetType())
-                                let tupleType = FSharpType.MakeTupleType types
-                                FSharpValue.MakeTuple(values, tupleType)
-                        result :?> 'T |> Some 
-                    | None -> 
-                | ApplyMatchAndComplete of ( char * (int) * ('T -> HttpHandler) ) // (lastParser, No# Parsers, Cont) 
+            let tupleType = FSharpType.MakeTupleType valuesTypes
+            FSharpValue.MakeTuple(values, tupleType)
+        :?> 'T
+        |> fn
 
+    let matchFinalNodeFn (fn:RouteCont<'T>) pos acc =
+        match fn with
+        | EmptyMap -> fail ctx // the chain didnt end with a handler (in error) so fail
+        | HandlerMap fn -> fn // run function with all parameters
+        | ApplyMatch _ -> fail ctx // the chain didnt end with a handler (in error) so fail
+        | MatchComplete (i,fn) ->  createResult [] i fn // a chain with parses, ending in string has ended and can now be applied 
+        | ApplyMatchAndComplete ( f,i,fn ) -> // a chain with parsers (optional) ends with pattern match also
+            match formatStringMap.[f] path pos last with
+            | Some o -> createResult (o :: acc) i fn
+            | None -> fail ctx
+
+    let rec applyMatch (f:char,c:char,n) pos node acc =
+        match getNodeCompletion c pos node with
+        | Some (fpos,npos,cnode) ->
+            match formatStringMap.[f] path pos fpos with
+            | Some o -> 
+                match cnode.RouteFn with
+                | ApplyMatch (f2,c2,n2) -> applyMatch (f2,c2,n2) npos cnode (o :: acc)
+                | x -> matchFinalNodeFn x npos (o :: acc)
+            | None -> fail ctx
             
-            match node.TryGetValue path.[pos] with
-            | true, n -> 
-                routeFnMatch pos pobjs n.RouteFn 
-            | false , _ -> fail ctx
+        | None -> fail ctx // subsequent match could not complete so fail
 
-        go ipos root []
+    let rec crawl pos (node:Node) =
+        match node.TryGetValue path.[pos] with
+        | true, n ->
+            if pos = last then //if have reached end of path through nodes, run HandlerFn
+                matchFinalNodeFn node.RouteFn pos []
+            else                //need to continue down chain till get to end of path
+                crawl (pos + 1) n
+        | false , _ ->
+            // no further nodes, either a static url didnt match or there is a pattern match required
+            match node.RouteFn with
+            | ApplyMatch (f,c,n) -> applyMatch (f,c,n) pos n []              
+            | _ -> fail ctx // only a partial match would cause no next node so anything else is err
+    crawl ipos root        
+

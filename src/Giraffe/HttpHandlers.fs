@@ -30,8 +30,8 @@ type Continuation = HttpContext -> Task<HttpContext>
 type HttpHandler = Continuation -> Continuation -> HttpContext -> Task<HttpContext>
 
 /// Combines two HttpHandler functions into one.
-let compose (a : HttpHandler) (b : HttpHandler) =
-    fun (succ : Continuation) (fail : Continuation) (ctx:HttpContext) ->
+let compose (a : HttpHandler) (b : HttpHandler) : HttpContext =
+    fun (succ) (fail) (ctx) ->
         let childCont = b succ fail
         let parentCont = a childCont fail
         parentCont ctx
@@ -55,7 +55,7 @@ let private RouteKey = "giraffe_route"
 
 let private getSavedSubPath (ctx : HttpContext) =
     if ctx.Items.ContainsKey RouteKey
-    then ctx.Items.Item RouteKey |> string |> strOption 
+    then ctx.Items.Item RouteKey |> string |> strOption
     else None
 
 let private getPath (ctx : HttpContext) =
