@@ -1,4 +1,4 @@
-module Giraffe.HttpRouter
+module Test.HttpRouter
 
 open System.Threading.Tasks
 open Microsoft.AspNetCore.Http
@@ -26,7 +26,7 @@ type RouteState(path:string) =
 
 /// Private Range Parsers that quickly try parse over matched range (all fpos checked before running in preceeding functions)
 
-let private stringParse (path:string) ipos fpos = path.Substring(ipos,fpos - ipos) |> box |> Some
+let private stringParse (path:string) ipos fpos = path.Substring(ipos,fpos - ipos + 1) |> box |> Some
 
 let private  charParse (path:string) ipos fpos = path.[ipos] |> box |> Some // this is not ideal method (but uncommonly used)
 
@@ -122,24 +122,27 @@ let formatStringMap =
 // implimenation of (router) Trie Node
 // assumptions: memory and compile time not relevant, all about execution speed, initially testing with Dictionary edges
 
-type Node(iRouteFn:RouteCont<'T>) = 
+type Node(iRouteFn:RouteCont) = 
     let mutable hasEdges = false //quick field to check if node has edges
     let edges = Dictionary<char,Node>()
     member val RouteFn = iRouteFn with get,set 
     member x.Add v routeFn =
         match edges.TryGetValue v with
         | true, node -> 
+                //   ( current ),( new )
             match routeFn with
-            | EmptyMap -> () 
-            | rf -> 
-                x.RouteFn <- rf
+            | EmptyMap -> ()
+            | y -> node.RouteFn <- y
+            // | MultiMatch ls -> routeFn :: ls |> List.sortBy (fun v -> v.Precedent) |> MultiMatch
+            // | x -> [routeFn ; x ] |> List.sortBy (fun v -> v.Precedent) |> MultiMatch
+            //| _, y -> y // TEMPORARY MATCH SCHEME
             node
         | false, _ -> 
             let node = Node(routeFn)
             edges.Add(v,node)
             if not hasEdges then hasEdges <- true //quick field to check if node has edges
             node
-    
+            
     member x.EdgeCount 
         with get () = edges.Count
     
@@ -152,62 +155,83 @@ type Node(iRouteFn:RouteCont<'T>) =
         | true,node-> Some node
         | false,_-> None
 
-    member x.HasCompletion (path:string) ipos =
-        let fin = path.Length
-        let rec go pos (node:Node) =
-            if pos < fin then
-                match node.TryGetValue path.[pos] with
-                | true,cNode->
-                    match node.RouteFn with
-                    | EmptyMap -> go (pos + 1) cNode
-                    | x -> Some x                    
-                | false,_-> None
-            else None
-        go ipos x
-
-and RouteCont<'T> =
+// Route Continuation Functions    
+and RouteCont =
 | EmptyMap
 | HandlerMap of HttpHandler
+| SubRouteMap of HttpHandler
+| MultiMatch of RouteCont list
 | ApplyMatch of ( char * char * (Node) ) // (parser , nextChar , contNode) 
-| MatchComplete of ( (int) * ('T -> HttpHandler) ) // ( No# Parsers, Cont) 
-| ApplyMatchAndComplete of ( char * int * ('T -> HttpHandler) ) // (lastParser, No# Parsers, Cont) 
-
-// test construction of Node Trie using node mapping functions
+| MatchComplete of ( (int) * (obj -> HttpHandler) ) // ( No# Parsers, Cont) 
+| ApplyMatchAndComplete of ( char * int * (obj -> HttpHandler) ) // (lastParser, No# Parsers, Cont)
+    member x.Precedent 
+        with get () =
+            match x with
+            | MultiMatch _ -> 0 
+            | SubRouteMap _ -> 1
+            | HandlerMap _ -> 2
+            | ApplyMatch _ -> 3
+            | ApplyMatchAndComplete _ -> 4
+            | MatchComplete _ -> 5
+            | EmptyMap -> 6
+////////////////////////////////////////////////////
+// Node Trie using node mapping functions
 ////////////////////////////////////////////////////
 
-// Simple route that iterates down nodes and if function found, execute as normal
-let tRoute (path:string) (fn:HttpHandler) (root:Node)=
+// Bindy is a hack to encapsulate type inferance application in node trie of multiple types, partially applied functions fail
+type Bindy() =
+    member x.EatMe<'U,'T> (sf:StringFormat<'U,'T>) (fn : 'T -> HttpHandler) (v2:obj) = v2 :?> 'T |> fn
+
+let inline bindMe (sf:StringFormat<'U,'T>) (fn : 'T -> HttpHandler) = 
+    let b = Bindy()
+    b.EatMe<'U,'T> sf fn 
+
+let inline (==>) (a:HttpHandler -> Node -> Node) (b:HttpHandler) = a b
+
+let private addRoutContToPath (path:string) (rc:RouteCont)  (root:Node) =     
     let last = path.Length - 1 
     let rec go i (node:Node) =
         if i = last then
-            node.Add path.[i] (HandlerMap fn)
+            node.Add path.[i] rc
         else
             let nextNode = node.Add path.[i] EmptyMap
             go (i + 1) nextNode
     go 0 root
+
+// Simple route that iterates down nodes and if function found, execute as normal
+let tRoute (path:string) (fn:HttpHandler) (root:Node) = 
+    addRoutContToPath path (HandlerMap fn) root
+
+let tSubRoute (path:string) (fn:HttpHandler) (root:Node) =
+    addRoutContToPath path (SubRouteMap fn) root
 
 // parsing route that iterates down nodes, parses, and then continues down further notes if needed
 let tRoutef (path : StringFormat<_,'T>) (fn:'T -> HttpHandler) (root:Node)=
     let last = path.Value.Length - 1
     let rec go i (pcount) (node:Node)  =
         if i = last then
-            // have reached the end of the string match so add fn handler, and no continuation node
-            node.Add path.Value.[i] (MatchComplete( pcount , fn ))
+            // have reached the end of the string match so add fn handler, and no continuation node            
+            node.Add path.Value.[i] (MatchComplete( pcount , bindMe path fn ))
+            //node.RouteFn <- (MatchComplete( pcount , bindMe path fn ))
         else
             if path.Value.[i] = '%' && i + 1 <= last then
                 let fmtChar = path.Value.[i + 1]
-                // overrided % case
+                // overrided %% -> % case
                 if fmtChar = '%' then
                     node.Add '%' EmptyMap
                     |> go (i + 2) pcount
                 // formater with valid key
                 else if formatStringMap.ContainsKey fmtChar then
 
-                    if i + 1 = last then // if at the end of the parse
-                        node.RouteFn <- ApplyMatchAndComplete( fmtChar , pcount + 1 , fn )
+                    if i + 1 = last then // if finishes in a parse
+                        node.RouteFn <- ApplyMatchAndComplete( fmtChar , pcount + 1 , bindMe path fn )
                         node
-                    else 
-                        let newNodeBranch = Node(EmptyMap)
+                    else
+                        //otherwise add mid pattern parse apply
+                        let newNodeBranch =
+                            match node.RouteFn with
+                            | ApplyMatch (_,_,n) -> n 
+                            | x -> Node(EmptyMap)
                         node.RouteFn <- ApplyMatch( fmtChar ,path.Value.[i+2], newNodeBranch ) // need to insert Parser on this current node before match string part
                         go (i + 2) (pcount + 1) newNodeBranch 
                 // badly formated format string that has unknown char after %
@@ -216,6 +240,7 @@ let tRoutef (path : StringFormat<_,'T>) (fn:'T -> HttpHandler) (root:Node)=
                     node.Add path.Value.[i] EmptyMap
                     |> go (i + 1) pcount
             else
+                //normal string match path/chain
                 node.Add path.Value.[i] EmptyMap
                 |> go (i + 1) pcount
     go 0 0 root 
@@ -228,9 +253,10 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
     
     let path = rs.path
     let ipos = rs.pos
-    let last = path.Length
+    let last = path.Length - 1
     
     let rec checkMatchSubPath pos (node:Node) = // this funciton is only used by parser paths
+        //this function doesn't test array bounds as all callers do so before
         match node.TryGetValue path.[pos] with
         | true, n -> 
             if pos = last then //if this pattern match shares node chain as substring of another
@@ -238,7 +264,7 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
                 | MatchComplete _ -> pos, Some n
                 | _ -> pos, None
             else checkMatchSubPath (pos + 1) n
-        | false,_ ->
+        | false,_ -> //failed node match on pos represents start of a match
             if pos = last then
                 match node.RouteFn with
                 | MatchComplete _ -> pos, Some node
@@ -246,20 +272,21 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
             else
                 match node.RouteFn with
                 | ApplyMatch _ 
-                | ApplyMatchAndComplete _ -> pos, Some node
-                | _ -> pos, None
+                | ApplyMatchAndComplete _ -> (pos), Some node
+                | _ -> (pos), None
 
     let rec getNodeCompletion (c:char) pos (node:Node) =
         match path.IndexOf(c,pos) with
         | -1 -> None
-        | x1 -> 
+        | x1 -> //x1 represents position of match close char but rest of chain must be confirmed 
             match checkMatchSubPath x1 node with
             | x2,Some cn -> Some(x1 - 1,x2,cn)                 // from where char found to end of node chain complete
-            | x2,None   ->  getNodeCompletion c x2 node // char foundpart of match, not completion string
+            | x2,None   ->  getNodeCompletion c (x1 + 1) node // char foundpart of match, not completion string
 
-    let createResult (args:obj list) (argCount:int) (fn:'T -> HttpHandler) : Task<HttpContext> =
+    let createResult (args:obj list) (argCount:int) (fn:obj -> HttpHandler) : Task<HttpContext> =
         let input =  
             match argCount with
+            | 0 -> Unchecked.defaultof<obj> //HACK: need routeF to throw error on zero args
             | 1 -> args.Head // HACK: look into performant way to safely extract
             | _ ->
                 let values = Array.zeroCreate<obj>(argCount)
@@ -272,32 +299,29 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
                         | h :: t -> 
                             values.[i] <- h
                             valuesTypes.[i] <- h.GetType()
-                            revmap t (i-1)
-                revmap args argCount
+                            revmap t (i - 1)
+                revmap args (argCount - 1)
                 
                 let tupleType = FSharpType.MakeTupleType valuesTypes
                 FSharpValue.MakeTuple(values, tupleType)
-            :?> 'T
         fn input succ fail ctx
 
     let saveRouteState pos = 
         rs.pos <- pos
         ctx.Items.[routerKey] <- rs 
 
-    let matchFinalNodeFn (fn:RouteCont<'T>) pos acc : Task<HttpContext> =
+    let matchFinalNodeFn (fn:RouteCont) pos acc : Task<HttpContext> =
         match fn with
         | EmptyMap -> fail ctx // the chain didnt end with a handler (in error) so fail
+        | SubRouteMap _ -> fail ctx // a subroute cannot be a final pos route Cont
         | HandlerMap fn ->
-            saveRouteState pos
             fn succ fail ctx // run function with all parameters
         | ApplyMatch _ -> fail ctx // the chain didnt end with a handler (in error) so fail
         | MatchComplete (i,fn) ->  
-            saveRouteState pos
-            createResult [] i fn // a chain with parses, ending in string has ended and can now be applied 
+            createResult acc i fn // a chain with parses, ending in string has ended and can now be applied 
         | ApplyMatchAndComplete ( f,i,fn ) -> // a chain with parsers (optional) ends with pattern match also
             match formatStringMap.[f] path pos last with
             | Some o -> 
-                saveRouteState pos
                 createResult (o :: acc) i fn
             | None -> fail ctx
 
@@ -307,7 +331,7 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
             match formatStringMap.[f] path pos fpos with
             | Some o -> 
                 match cnode.RouteFn with
-                | ApplyMatch (f2,c2,n2) -> applyMatch (f2,c2,n2) npos cnode (o :: acc)
+                | ApplyMatch (f2,c2,n2) -> applyMatch (f2,c2,n2) npos n2 (o :: acc)
                 | x -> matchFinalNodeFn x npos (o :: acc)
             | None -> fail ctx
             
@@ -317,15 +341,28 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
         match node.TryGetValue path.[pos] with
         | true, n ->
             if pos = last then //if have reached end of path through nodes, run HandlerFn
-                matchFinalNodeFn node.RouteFn pos []
+                matchFinalNodeFn n.RouteFn pos []
             else                //need to continue down chain till get to end of path
                 crawl (pos + 1) n
         | false , _ ->
             // no further nodes, either a static url didnt match or there is a pattern match required
             match node.RouteFn with
-            | ApplyMatch (f,c,n) -> applyMatch (f,c,n) pos n []              
+            | ApplyMatch (f,c,n) -> applyMatch (f,c,n) pos n []
+            | ApplyMatchAndComplete _ -> matchFinalNodeFn node.RouteFn pos [] //apply on match in the base crawler means single match
+            | SubRouteMap (fn) ->
+                saveRouteState pos
+                fn succ fail ctx
             | _ -> fail ctx // only a partial match would cause no next node so anything else is err
-    crawl ipos root        
+    
+    let preCrawl pos (node:Node) =
+        if path.Length = 0 then
+            match node.TryGetValue '/' with
+            | true, n -> matchFinalNodeFn node.RouteFn pos []
+            | false , _ -> fail ctx
+        else
+            crawl pos node
+
+    preCrawl ipos root        
 
 let routeTrie (fns:(Node->Node) list) : HttpHandler =
     let root = Node(EmptyMap)
@@ -343,5 +380,5 @@ let routeTrie (fns:(Node->Node) list) : HttpHandler =
         let routeState =
             match ctx.Items.TryGetValue routerKey with
             | true, (v:obj) -> v :?> RouteState  
-            | false,_-> RouteState(ctx.Request.Path.ToString())
+            | false,_-> RouteState(ctx.Request.Path.Value)
         processPath routeState root succ fail ctx
