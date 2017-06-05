@@ -66,7 +66,6 @@ type Node(routeFn) =
     member x.GetEdgeKeys = edges.Keys
     member x.TryGetValue v = edges.TryGetValue v
 
-<<<<<<< HEAD
     member x.Search v =
         match edges.TryGetValue v with
         | true,node-> Some node
@@ -90,7 +89,6 @@ type Node(routeFn) =
 
 and RouteCont<'T > =
 | EmptyMap
-=======
 // Route Continuation Functions    
 and MidCont =
 | SubRouteMap of HttpHandler
@@ -103,7 +101,6 @@ and MidCont =
             | ApplyMatch (c,_,_) -> (int c)
             | ApplyMatchAndComplete (c,_,_) -> 256 + (int c) 
 and EndCont = 
->>>>>>> 67c3a60363735fc2bfa6f47e538621f59d0cff4c
 | HandlerMap of HttpHandler
 | MatchComplete of ( (int) * (obj -> HttpHandler) ) // ( No# Parsers, Cont Fn) 
     member x.Precedence
@@ -253,11 +250,7 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
     let rec getNodeCompletion (cs:char []) pos (node:Node) =
         match path.IndexOfAny(cs,pos) with
         | -1 -> None
-<<<<<<< HEAD
-        | x1 -> //x1 in bounds so safe to pass to {checkMatchSubPath}
-=======
         | x1 -> //x1 represents position of match close char but rest of chain must be confirmed 
->>>>>>> 67c3a60363735fc2bfa6f47e538621f59d0cff4c
             match checkMatchSubPath x1 node with
             | x2,Some cn -> Some(x1 - 1,x2,cn)                 // from where char found to end of node chain complete
             | x2,None   ->  getNodeCompletion cs (x1 + 1) node // char foundpart of match, not completion string
@@ -265,12 +258,8 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
     let createResult (args:obj list) (argCount:int) (fn:obj -> HttpHandler) =
         let input =  
             match argCount with
-<<<<<<< HEAD
-            | 1 -> args.Head :?> 'T // HACK: look into performant way to safely extract
-=======
             | 0 -> Unchecked.defaultof<obj> //HACK: need routeF to throw error on zero args
             | 1 -> args.Head // HACK: look into performant way to safely extract
->>>>>>> 67c3a60363735fc2bfa6f47e538621f59d0cff4c
             | _ ->
                 let values = Array.zeroCreate<obj>(argCount)
                 let valuesTypes = Array.zeroCreate<System.Type>(argCount)
@@ -286,11 +275,8 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
                 revmap args (argCount - 1)
                 
                 let tupleType = FSharpType.MakeTupleType valuesTypes
-<<<<<<< HEAD
                 FSharpValue.MakeTuple(values, tupleType) :?> 'T
-=======
                 FSharpValue.MakeTuple(values, tupleType)
->>>>>>> 67c3a60363735fc2bfa6f47e538621f59d0cff4c
         fn input succ fail ctx
 
     let saveRouteState pos = 
@@ -342,7 +328,6 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
             else                //need to continue down chain till get to end of path
                 crawl (pos + 1) n
         | false , _ ->
-<<<<<<< HEAD
             // no further nodes, either a static url didnt match or there is a pattern match required
             match node.RouteFn with
             | ApplyMatch (f,c,n) -> applyMatch (f,c,n) pos n []              
@@ -357,12 +342,10 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
             crawl pos node
 
     preCrawl ipos root        
-=======
             // no further nodes, either a static url didnt match or there is a pattern match required            
             processMid node.MidFns pos []
 
     crawl ipos root
->>>>>>> 67c3a60363735fc2bfa6f47e538621f59d0cff4c
 
 let routeTrie (fns:(Node->Node) list) : HttpHandler =
     let root = Node(Empty)
