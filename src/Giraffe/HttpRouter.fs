@@ -152,20 +152,23 @@ type Node(iRouteFn:RouteCont<'T>) =
         | true,node-> Some node
         | false,_-> None
 
-    member x.HasCompletion (path:string) ipos =
-        let fin = path.Length
-        let rec go pos (node:Node) =
-            if pos < fin then
-                match node.TryGetValue path.[pos] with
-                | true,cNode->
-                    match node.RouteFn with
-                    | EmptyMap -> go (pos + 1) cNode
-                    | x -> Some x                    
-                | false,_-> None
-            else None
-        go ipos x
+    // member x.HasCompletion (path:string) ipos =
+    //     let fin = path.Length
+    //     let rec go pos (node:Node) =
+    //         if pos < fin then
+    //             match node.TryGetValue path.[pos] with
+    //             | true,cNode->
+    //                 match node.RouteFn with
+    //                 | EmptyMap -> go (pos + 1) cNode
+    //                 | x -> Some x                    
+    //             | false,_-> None
+    //         else None
+    //     go ipos x
+    
+    static member (>=>) (a:HttpHandler->Node->Node,b:HttpHandler) : Node->Node =
+        a b
 
-and RouteCont<'T> =
+and RouteCont<'T > =
 | EmptyMap
 | HandlerMap of HttpHandler
 | ApplyMatch of ( char * char * (Node) ) // (parser , nextChar , contNode) 
@@ -228,9 +231,10 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
     
     let path = rs.path
     let ipos = rs.pos
-    let last = path.Length
+    let last = path.Length - 1
     
     let rec checkMatchSubPath pos (node:Node) = // this funciton is only used by parser paths
+        //this function doesn't test array bounds as all callers do so before
         match node.TryGetValue path.[pos] with
         | true, n -> 
             if pos = last then //if this pattern match shares node chain as substring of another
@@ -252,7 +256,7 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
     let rec getNodeCompletion (c:char) pos (node:Node) =
         match path.IndexOf(c,pos) with
         | -1 -> None
-        | x1 -> 
+        | x1 -> //x1 in bounds so safe to pass to {checkMatchSubPath}
             match checkMatchSubPath x1 node with
             | x2,Some cn -> Some(x1 - 1,x2,cn)                 // from where char found to end of node chain complete
             | x2,None   ->  getNodeCompletion c x2 node // char foundpart of match, not completion string
@@ -260,7 +264,7 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
     let createResult (args:obj list) (argCount:int) (fn:'T -> HttpHandler) : Task<HttpContext> =
         let input =  
             match argCount with
-            | 1 -> args.Head // HACK: look into performant way to safely extract
+            | 1 -> args.Head :?> 'T // HACK: look into performant way to safely extract
             | _ ->
                 let values = Array.zeroCreate<obj>(argCount)
                 let valuesTypes = Array.zeroCreate<System.Type>(argCount)
@@ -276,8 +280,7 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
                 revmap args argCount
                 
                 let tupleType = FSharpType.MakeTupleType valuesTypes
-                FSharpValue.MakeTuple(values, tupleType)
-            :?> 'T
+                FSharpValue.MakeTuple(values, tupleType) :?> 'T
         fn input succ fail ctx
 
     let saveRouteState pos = 
@@ -325,7 +328,16 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
             match node.RouteFn with
             | ApplyMatch (f,c,n) -> applyMatch (f,c,n) pos n []              
             | _ -> fail ctx // only a partial match would cause no next node so anything else is err
-    crawl ipos root        
+    
+    let preCrawl pos (node:Node) =
+        if path.Length = 0 then
+            match node.TryGetValue '/' with
+            | true, n -> matchFinalNodeFn node.RouteFn pos []
+            | false , _ -> fail ctx
+        else
+            crawl pos node
+
+    preCrawl ipos root        
 
 let routeTrie (fns:(Node->Node) list) : HttpHandler =
     let root = Node(EmptyMap)
