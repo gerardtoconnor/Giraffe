@@ -34,9 +34,11 @@
     <PackageReference Include="Microsoft.AspNetCore.Diagnostics" Version="1.1.*"/>
     <PackageReference Include="Microsoft.AspNetCore.Mvc" Version="1.1.*"/>
     <PackageReference Include="DotLiquid" Version="2.0.*"/>
+    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.4.0-preview1-25305-02"/>
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="AsyncTask.fs"/>
+    <!--<Compile Include="AsyncTask.fs"/>-->
+    <Compile Include="ValueTask.fs"/>
     <Compile Include="Common.fs"/>
     <Compile Include="ComputationExpressions.fs"/>
     <Compile Include="FormatExpressions.fs"/>

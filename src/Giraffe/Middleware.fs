@@ -10,12 +10,17 @@ open Microsoft.Extensions.DependencyInjection
 open Microsoft.Extensions.FileProviders
 open Microsoft.AspNetCore.Mvc.Razor
 open Giraffe.HttpHandlers
-open Giraffe.AsyncTask
+open Giraffe.ValueTask
 
 /// ---------------------------
 /// Logging helper functions
 /// ---------------------------
 
+let toTask (t:ValueTask<_>) = t.AsTask() :> Task
+    
+// let TaskToValueTask (t:Task) = 
+//     t.GetAwaiter ValueTask<unit>(t)
+    
 let private getRequestInfo (ctx : HttpContext) =
     (ctx.Request.Protocol,
      ctx.Request.Method,
@@ -58,8 +63,8 @@ type GiraffeMiddleware (next          : RequestDelegate,
                 })
     member __.Invoke (ctx : HttpContext) =
         task {
-            do! handler succ fail ctx
-        } 
+            return! handler succ fail ctx
+        } |> toTask
 
 /// ---------------------------
 /// Error Handling middleware
@@ -87,13 +92,14 @@ type GiraffeErrorHandlerMiddleware (next          : RequestDelegate,
                     next.Invoke ctx
             with ex ->
                 try
-                    do!
+                    let! _ =
                         (errorHandler ex logger succ fail ctx)
+                    return ()
                         
                 with ex2 ->
                     logger.LogError(EventId(0), ex,  "An unhandled exception has occurred while executing the request.")
                     logger.LogError(EventId(0), ex2, "An exception was thrown attempting to handle the original exception.")
-        } 
+        } |> toTask
 
 /// ---------------------------
 /// Extension methods for convenience

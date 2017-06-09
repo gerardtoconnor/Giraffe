@@ -9,7 +9,7 @@ open Microsoft.Extensions.Primitives
 open Microsoft.Extensions.Logging
 open Microsoft.Net.Http.Headers
 open Giraffe.Common
-open Giraffe.AsyncTask
+open Giraffe.ValueTask
 
 type HttpContext with
 

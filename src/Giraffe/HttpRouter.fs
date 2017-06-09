@@ -7,7 +7,7 @@ open Microsoft.Extensions.Primitives
 open FSharp.Core.Printf
 open System.Collections.Generic
 open Microsoft.FSharp.Reflection
-open Giraffe.AsyncTask
+open Giraffe.ValueTask
 open Giraffe.HttpHandlers
 open HttpRouter.RouterParsers
 
@@ -274,7 +274,7 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
             | Some o -> createResult (o :: acc) i fn
             | None -> processMid tail pos acc // ??????????????????
         
-        let rec applyMatch (f:char,ca:char[],n) pos acc tail : Task<HttpContext> =
+        let rec applyMatch (f:char,ca:char[],n) pos acc tail : ValueTask<HttpContext> =
             match getNodeCompletion ca pos n with
             | Some (fpos,npos,cnode) ->
                 match formatStringMap.[f] path pos fpos with
