@@ -55,6 +55,16 @@ module Giraffe.ValueTask
             let awaiter = m.GetAwaiter()
             awaiter.OnCompleted(fun _ -> tcs.SetResult((f m.Result).Result))
             vt
+
+    let inline asyncBind (f: 'T -> ValueTask<'U>) (am: Async<'T>) =
+        let tcs =  new TaskCompletionSource<'U>() 
+        let t = tcs.Task
+        let vt = ValueTask<'U>(t)
+        Async.StartWithContinuations (am,
+                (fun v -> tcs.SetResult((f v).Result)),
+                (fun e -> printfn "%A" e),
+                (fun op -> printfn "%A" op))
+        vt
             //t.Unwrap()
             //m.ContinueWith((fun (x: Task<_>) -> f x.Result)).Unwrap()
     let inline taskBind (f:unit -> ValueTask<'U>) (m:Task) =
@@ -86,6 +96,8 @@ module Giraffe.ValueTask
         member this.Bind(m, f) = tbind f m // bindWithOptions cancellationToken contOptions scheduler f m
 
         member this.Bind(m, f) = taskBind f m
+
+        member this.Bind(m, f) = asyncBind f m
         //member this.Bind(m,f) = bindTask f m
 
         //member this.Bind(m, f) = bindTask f m
