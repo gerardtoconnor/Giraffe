@@ -10,7 +10,7 @@ open Microsoft.AspNetCore.Mvc.Razor
 open Microsoft.AspNetCore.Mvc.Rendering
 open Microsoft.AspNetCore.Mvc.ViewFeatures
 open Microsoft.AspNetCore.Routing
-open Giraffe.AsyncTask
+open Giraffe.ValueTask
 
 let renderRazorView (razorViewEngine   : IRazorViewEngine)
                     (tempDataProvider  : ITempDataProvider)

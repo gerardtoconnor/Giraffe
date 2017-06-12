@@ -18,15 +18,15 @@ open Giraffe.FormatExpressions
 open Giraffe.HttpContextExtensions
 open Giraffe.RazorEngine
 open Giraffe.HtmlEngine
-open Giraffe.AsyncTask
+open Giraffe.ValueTask
 
 //type HttpContext = HttpContext 
 //Async Handlers
 
-type Continuation = HttpContext -> Task<HttpContext>
+type Continuation = HttpContext -> ValueTask<HttpContext>
 
 //result of any handler
-type HttpHandler = Continuation -> Continuation -> HttpContext -> Task<HttpContext>
+type HttpHandler = Continuation -> Continuation -> HttpContext -> ValueTask<HttpContext>
 
 /// Combines two HttpHandler functions into one.
 let compose (a : HttpHandler) (b : HttpHandler) =
@@ -254,6 +254,7 @@ let setBody (bytes : byte array) : HttpHandler =
     fun succ fail ctx ->
         task {            
             ctx.Response.Headers.["Content-Length"] <- StringValues(bytes.Length.ToString())
+            
             do! ctx.Response.Body.WriteAsync(bytes, 0, bytes.Length)
             return! succ ctx
         }
@@ -330,7 +331,7 @@ let razorView (contentType : string) (viewName : string) (model : 'T)  : HttpHan
             let! result = renderRazorView engine tempDataProvider ctx viewName model
             match result with
             | Error msg -> 
-                return! (failwith msg)
+                return! setBodyAsString msg succ fail ctx //ValueTask<'T>(failwith msg) //
             | Ok output ->
                 return! (setHttpHeader "Content-Type" contentType >=> setBodyAsString output) succ fail ctx
         }
