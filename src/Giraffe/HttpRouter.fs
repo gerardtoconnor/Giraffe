@@ -7,6 +7,7 @@ open Microsoft.Extensions.Primitives
 open FSharp.Core.Printf
 open System.Collections.Generic
 open Microsoft.FSharp.Reflection
+//open Giraffe.AsyncTask
 open Giraffe.ValueTask
 open Giraffe.HttpHandlers
 open HttpRouter.RouterParsers
@@ -66,29 +67,6 @@ type Node(routeFn) =
     member x.GetEdgeKeys = edges.Keys
     member x.TryGetValue v = edges.TryGetValue v
 
-    member x.Search v =
-        match edges.TryGetValue v with
-        | true,node-> Some node
-        | false,_-> None
-
-    // member x.HasCompletion (path:string) ipos =
-    //     let fin = path.Length
-    //     let rec go pos (node:Node) =
-    //         if pos < fin then
-    //             match node.TryGetValue path.[pos] with
-    //             | true,cNode->
-    //                 match node.RouteFn with
-    //                 | EmptyMap -> go (pos + 1) cNode
-    //                 | x -> Some x                    
-    //             | false,_-> None
-    //         else None
-    //     go ipos x
-    
-    static member (>=>) (a:HttpHandler->Node->Node,b:HttpHandler) : Node->Node =
-        a b
-
-and RouteCont<'T > =
-| EmptyMap
 // Route Continuation Functions    
 and MidCont =
 | SubRouteMap of HttpHandler
@@ -118,7 +96,7 @@ and ContType =
 // Helper Functions
 ////////////////////////////////////////////////////
 
-// Bindy is a hack to encapsulate type inferance application in node trie of multiple types, partially applied functions fail
+// Bindy is a HACK to encapsulate type inferance application in node trie of multiple types, partially applied functions fail
 type Bindy() =
     member x.EatMe<'U,'T> (sf:StringFormat<'U,'T>) (fn : 'T -> HttpHandler) (v2:obj) = v2 :?> 'T |> fn
 
@@ -128,6 +106,25 @@ let inline bindMe (sf:StringFormat<'U,'T>) (fn : 'T -> HttpHandler) =
 
 let inline (==>) (a:HttpHandler -> Node -> Node) (b:HttpHandler) = a b
 
+// type HandlerResult<'T> =
+// | None
+// | Some of 'T
+// | TaskResult of Task<HandlerResult<'T>>
+
+// type RouteNodeFn() =
+//     let mutable p = ""
+//     let mutable bindFn = Unchecked.defaultof<obj -> 'T>
+//     let mutable handle = Unchecked.defaultof<HttpHandler>
+//     member __.AddPathRoute (path:string) = p <- path
+//     member __.AddParseHandler<'U,'T> (sf:StringFormat<'U,'T>) =
+//         bindFn <- fun (v2:obj) -> v2 :?> 'T
+//     member __.AddHandler (handler:HttpHandler) = handle <- handler
+//     static member (>=>) (n:RouteNodeFn) (h:HttpHandler) =
+//         n.AddHandler h
+//     static member (>=>) (n:RouteNodeFn) (ph:'T -> HttpHandler) =
+//         n.AddParseHandler<_,'T>  (ph:'T -> HttpHandler)
+
+//////////////////////
 let private addRoutContToPath (path:string) (rc:ContType)  (root:Node) =     
     let last = path.Length - 1 
     let rec go i (node:Node) =
@@ -166,6 +163,7 @@ let getPostMatchNode fmt (nxt:char) (ils:MidCont list) =
                 else go tfns (hfn::acc) no
             | _ -> go tfns (hfn::acc) no
     go ils [] None
+
 ////////////////////////////////////////////////////
 // Routing Node Map Functions used to build trie
 ////////////////////////////////////////////////////
@@ -275,7 +273,6 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
                 revmap args (argCount - 1)
                 
                 let tupleType = FSharpType.MakeTupleType valuesTypes
-                FSharpValue.MakeTuple(values, tupleType) :?> 'T
                 FSharpValue.MakeTuple(values, tupleType)
         fn input succ fail ctx
 
@@ -328,20 +325,6 @@ let private processPath (rs:RouteState) (root:Node) : HttpHandler =
             else                //need to continue down chain till get to end of path
                 crawl (pos + 1) n
         | false , _ ->
-            // no further nodes, either a static url didnt match or there is a pattern match required
-            match node.RouteFn with
-            | ApplyMatch (f,c,n) -> applyMatch (f,c,n) pos n []              
-            | _ -> fail ctx // only a partial match would cause no next node so anything else is err
-    
-    let preCrawl pos (node:Node) =
-        if path.Length = 0 then
-            match node.TryGetValue '/' with
-            | true, n -> matchFinalNodeFn node.RouteFn pos []
-            | false , _ -> fail ctx
-        else
-            crawl pos node
-
-    preCrawl ipos root        
             // no further nodes, either a static url didnt match or there is a pattern match required            
             processMid node.MidFns pos []
 
