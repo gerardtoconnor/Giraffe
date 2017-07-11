@@ -17,7 +17,9 @@ open Giraffe.HtmlEngine
 
 type HttpHandlerResult = Task<HttpContext option>
 
-type HttpHandler = HttpContext -> HttpHandlerResult
+type HttpCont = HttpContext -> HttpHandlerResult
+
+type HttpHandler = HttpCont -> HttpContext -> HttpHandlerResult
 
 type ErrorHandler = exn -> ILogger -> HttpHandler
 
@@ -39,10 +41,11 @@ let private getSavedSubPath (ctx : HttpContext) =
     then ctx.Items.Item RouteKey |> string |> strOption
     else None
 
-let private getPath (ctx : HttpContext) =
-    match getSavedSubPath ctx with
-    | Some p -> ctx.Request.Path.ToString().[p.Length..]
-    | None   -> ctx.Request.Path.ToString()
+let private getPath =
+    fun  (ctx : HttpContext) ->
+        match getSavedSubPath ctx with
+        | Some p -> ctx.Request.Path.ToString().[p.Length..]
+        | None   -> ctx.Request.Path.ToString()
 
 let private handlerWithRootedPath (path : string) (handler : HttpHandler) =
     fun (ctx : HttpContext) ->
@@ -64,26 +67,29 @@ let private handlerWithRootedPath (path : string) (handler : HttpHandler) =
 /// to the handler, otherwise short circuit and return None as the result.
 /// If the response has already been written in the resulting HttpContext,
 /// then it will skip the HttpHandler as well.
-let bind (handler : HttpHandler) =
-    fun (result : HttpHandlerResult) ->
-        task {
-            let! (ctxOpt : HttpContext option) = result
-            match ctxOpt with
-            | None     -> return None
-            | Some ctx ->
-                match ctx.Response.HasStarted with
-                | true  -> return  Some ctx
-                | false -> return! handler ctx
-        }
+// let bind (handler : HttpHandler) =
+//     fun (result : HttpHandlerResult) ->
+//         task {
+//             let! (ctxOpt : HttpContext option) = result
+//             match ctxOpt with
+//             | None     -> return None
+//             | Some ctx ->
+//                 match ctx.Response.HasStarted with
+//                 | true  -> return  Some ctx
+//                 | false -> return! handler ctx
+//         }
 
 /// Combines two HttpHandler functions into one.
-let compose (handler : HttpHandler) (handler2 : HttpHandler) =
-    fun (ctx : HttpContext) ->
-        handler ctx |> bind handler2
-
-/// Adapts a HttpHandler function to accept a HttpHandlerResult.
-/// See bind for more information.
-let (>>=) = bind
+let compose (handler : HttpHandler) (handler2 : HttpHandler) : HttpHandler =
+    fun (next:HttpCont) ->
+        // 1. next will ultimately be fn ctx -> Some ctx but allows to compose / short circuit with continuations
+        // 2. We can apply next function at load so all handlers have thier next function refs and need only apply ctx on run 
+        let child  = handler2 next
+        let next = handler child
+        fun (ctx : HttpContext) ->    
+            match ctx.Response.HasStarted with
+            | true  -> task { return Some ctx }
+            | false -> next ctx                
 
 /// Combines two HttpHandler functions into one.
 /// See bind for more information.
@@ -91,25 +97,24 @@ let (>=>) = compose
 
 /// Iterates through a list of HttpHandler functions and returns the
 /// result of the first HttpHandler which outcome is Some HttpContext
-let rec choose (handlers : HttpHandler list) =
-    fun (ctx : HttpContext) ->
+let rec choose (handlers : HttpHandler list) : HttpHandler =    
+    fun next ctx ->
         task {
             match handlers with
             | []              -> return None
             | handler :: tail ->
-                let! result = handler ctx
+                let! result = handler next ctx
                 match result with
                 | Some c -> return Some c
-                | None   -> return! choose tail ctx
+                | None   -> return! choose tail next ctx
         }
 
 /// Filters an incoming HTTP request based on the HTTP verb
-let httpVerb (verb : string) =
-    fun (ctx : HttpContext) ->
+let httpVerb (verb : string) : HttpHandler =
+    fun _Some ctx ->
         if ctx.Request.Method.Equals verb
-        then Some ctx
-        else None
-        |> Task.FromResult
+        then _Some ctx
+        else task { return None }
 
 let GET    : HttpHandler = httpVerb "GET"
 let POST   : HttpHandler = httpVerb "POST"
@@ -119,39 +124,38 @@ let DELETE : HttpHandler = httpVerb "DELETE"
 
 /// Filters an incoming HTTP request based on the accepted
 /// mime types of the client.
-let mustAccept (mimeTypes : string list) =
-    fun (ctx : HttpContext) ->
+let mustAccept (mimeTypes : string list) : HttpHandler =
+    fun next ctx ->
         let headers = ctx.Request.GetTypedHeaders()
         headers.Accept
         |> Seq.map    (fun h -> h.ToString())
         |> Seq.exists (fun h -> mimeTypes |> Seq.contains h)
         |> function
-            | true  -> Some ctx
-            | false -> None
-            |> Task.FromResult
-
+            | true  -> next ctx
+            | false -> None |> Task.FromResult
+            
 /// Challenges the client to authenticate with a given authentication scheme.
-let challenge (authScheme : string) =
-    fun (ctx : HttpContext) ->
+let challenge (authScheme : string) : HttpHandler =
+    fun next ctx ->
         task {
             let auth = ctx.Authentication
             do! auth.ChallengeAsync authScheme
-            return Some ctx
+            return! next ctx
         }
 
 /// Signs off the current user.
-let signOff (authScheme : string) =
-    fun (ctx : HttpContext) ->
+let signOff (authScheme : string) : HttpHandler =
+    fun next ctx ->
         task {
             let auth = ctx.Authentication
             do! auth.SignOutAsync authScheme
-            return Some ctx
+            return! next ctx
         }
 
 /// Validates if a user is authenticated.
 /// If not it will proceed with the authFailedHandler.
-let requiresAuthentication (authFailedHandler : HttpHandler) =
-    fun (ctx : HttpContext) ->
+let requiresAuthentication (authFailedHandler : HttpHandler) : HttpHandler =
+    fun next ctx ->
         let user = ctx.User
         if isNotNull user && user.Identity.IsAuthenticated
         then Task.FromResult (Some ctx)
