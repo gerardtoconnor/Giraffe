@@ -111,9 +111,9 @@ let rec choose (handlers : HttpHandler list) : HttpHandler =
 
 /// Filters an incoming HTTP request based on the HTTP verb
 let httpVerb (verb : string) : HttpHandler =
-    fun _Some ctx ->
+    fun next ctx ->
         if ctx.Request.Method.Equals verb
-        then _Some ctx
+        then next ctx
         else task { return None }
 
 let GET    : HttpHandler = httpVerb "GET"
@@ -190,12 +190,12 @@ let clearResponse =
         Task.FromResult (Some ctx)
 
 /// Filters an incoming HTTP request based on the request path (case sensitive).
-let route (path : string) =
-    fun (ctx : HttpContext) ->
+let route (path : string) : HttpHandler =
+    fun Some' ctx ->
         if (getPath ctx).Equals path
-        then Some ctx
-        else None
-        |> Task.FromResult
+        then Some' ctx
+        else Task.FromResult None
+        
 
 /// Filters an incoming HTTP request based on the request path (case sensitive).
 /// The arguments from the format string will be automatically resolved when the

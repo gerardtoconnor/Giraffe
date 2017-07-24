@@ -30,8 +30,9 @@ type GiraffeMiddleware (next          : RequestDelegate,
     do if isNull next then raise (ArgumentNullException("next"))
 
     member __.Invoke (ctx : HttpContext) =
-        await {
-            let! result = handler ctx
+        task {
+            let finalNext = (fun ctx -> task { Some ctx } )
+            let! result = handler finalNext ctx
 
             let logger = loggerFactory.CreateLogger<GiraffeMiddleware>()
             if logger.IsEnabled LogLevel.Debug then
