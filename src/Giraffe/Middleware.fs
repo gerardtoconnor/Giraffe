@@ -8,6 +8,8 @@ open Microsoft.Extensions.Logging
 open Microsoft.Extensions.DependencyInjection
 open Microsoft.Extensions.FileProviders
 open Giraffe.HttpHandlers
+open System.Threading.Tasks
+open Giraffe.Tasks
 
 /// ---------------------------
 /// Logging helper functions
@@ -29,9 +31,9 @@ type GiraffeMiddleware (next          : RequestDelegate,
 
     do if isNull next then raise (ArgumentNullException("next"))
 
-    member __.Invoke (ctx : HttpContext) =
+    member __.Invoke (ctx : HttpContext) : Task =
         task {
-            let finalNext = (fun ctx -> task { Some ctx } )
+            let finalNext = (fun ctx -> task { return Some ctx } )
             let! result = handler finalNext ctx
 
             let logger = loggerFactory.CreateLogger<GiraffeMiddleware>()
@@ -43,7 +45,7 @@ type GiraffeMiddleware (next          : RequestDelegate,
 
             if (result.IsNone) then
                 return! next.Invoke ctx
-        }
+        } :> Task
 
 /// ---------------------------
 /// Error Handling middleware
@@ -56,18 +58,19 @@ type GiraffeErrorHandlerMiddleware (next          : RequestDelegate,
     do if isNull next then raise (ArgumentNullException("next"))
 
     member __.Invoke (ctx : HttpContext) =
-        await {
+        task {
             let logger = loggerFactory.CreateLogger<GiraffeErrorHandlerMiddleware>()
             try
                 return! next.Invoke ctx
             with ex ->
                 try
                     logger.LogError(EventId(0), ex,  "test.")
-                    return! errorHandler ex logger ctx
+                    let finalNext = (fun ctx -> task { return Some ctx } )
+                    return! errorHandler ex logger finalNext ctx :> Task // HACK <<<<<<<<<<<<<<
                 with ex2 ->
                     logger.LogError(EventId(0), ex,  "An unhandled exception has occurred while executing the request.")
                     logger.LogError(EventId(0), ex2, "An exception was thrown attempting to handle the original exception.")
-        }
+        } :> Task
 
 /// ---------------------------
 /// Extension methods for convenience

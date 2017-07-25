@@ -10,6 +10,7 @@ open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Reflection
 open Microsoft.Net.Http.Headers
 open Giraffe.Common
+open Giraffe.Tasks
 
 type HttpContext with
 
