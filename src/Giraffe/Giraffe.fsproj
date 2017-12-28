@@ -41,6 +41,8 @@
     <Compile Include="ComputationExpressions.fs" />
     <Compile Include="FormatExpressions.fs" />
     <Compile Include="XmlViewEngine.fs" />
+    <Compile Include="GiraffeViewEngine.fs" />
+    <Compile Include="BindViewEngine.fs" />
     <Compile Include="HttpContextExtensions.fs" />
     <Compile Include="HttpHandlers.fs" />
     <Compile Include="HttpStatusCodeHandlers.fs" />
