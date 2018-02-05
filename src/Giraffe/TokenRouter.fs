@@ -542,3 +542,19 @@ let routerDbg (dbg:string -> unit)  (abort:HttpHandler) (fns:(Node->Node) list) 
 
     //get path progress (if any so far)
     processPath abort root
+
+///// Messing
+let routef2 (path : PrintfFormat<'Printer,'State,'Residue,'Result,'Tuple>) (fn:'Tuple -> HttpHandler) (root:Node) =
+    ()
+
+let r2 = routef2 "/%s/%i/%o" (fun v -> Unchecked.defaultof<HttpHandler>) (Unchecked.defaultof<Node>)
+
+type Converter =
+    static member inline Parse(i1:int,i2:int,url:string) = int url
+    static member inline Parse(i1:int,i2:int,url:string) = url
+
+let inline routef3 (path : PrintfFormat<'Printer,_,_,HttpHandler>) (fn:'Printer) (root:Node) =
+    
+    ()
+
+let r3 = routef3 "/%s/%i/%o" (fun s i o next ctx -> Unchecked.defaultof<HttpFuncResult>) (Unchecked.defaultof<Node>)
